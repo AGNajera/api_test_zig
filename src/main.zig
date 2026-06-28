@@ -1,3 +1,5 @@
+// Quedó terminado, pero falta agregar DB para que se mantengan los datos ya que ahora lo hago desde memoria
+
 const std = @import("std");
 
 const Io = std.Io;
@@ -5,7 +7,7 @@ const net = Io.net;
 const json = std.json;
 
 const Note = struct {
-    id: i32,
+    id: u32,
     text: []u8,
 };
 
@@ -32,10 +34,8 @@ const App = struct {
     }
 
     fn findNote(app: *App, id: u32) ?*Note {
-        for (app.allocator.items) |*note| {
-            if (note.id == id) {
-                return note;
-            }
+        for (app.notes.items) |*note| {
+            if (note.id == id) return note;
         }
         return null;
     }
@@ -114,7 +114,7 @@ fn handleConnection(io: Io, stream: net.Stream, app: *App) void {
     }
 }
 
-fn route(request: *std.http.Server.Request, _: *App) !void {
+fn route(request: *std.http.Server.Request, app: *App) !void {
     const method = request.head.method;
     const path = request.head.target;
 
@@ -124,21 +124,126 @@ fn route(request: *std.http.Server.Request, _: *App) !void {
         // Después haré un servidor en Go para ver cual es mejor.
         // La IA lo puede escribir, pero que chiste tiene todo en la vida, no?
         return switch (method) {
+            .GET => listNotes(request, app),
+            .POST => createNote(request, app),
             else => respondJson(request, .method_not_allowed, "{\"error\":\"no permitido\"}"),
         };
     }
 
     if (std.mem.startsWith(u8, path, "/notes")) {
         const id_text = path["/notes/".len..];
-        _ = std.fmt.parseInt(u32, id_text, 10) catch {
+        const id = std.fmt.parseInt(u32, id_text, 10) catch {
             return respondJson(request, .bad_request, "{\"error\":\"id de nota inválida\"}");
         };
 
         return switch (method) {
+            .GET => getNote(request, app, id),
+            .PUT => updateNote(request, app, id),
+            .DELETE => deleteNote(request, app, id),
             else => respondJson(request, .method_not_allowed, "{\"error\":\"no permitido\"}"),
         };
     }
-    return respondJson(request, .not_found, "{\"error\":\"no se encontró\"}");
+    return respondJson(
+        request,
+        .not_found,
+        "{\"error\":\"no se encontró\"}",
+    );
+}
+
+fn listNotes(request: *std.http.Server.Request, app: *App) !void {
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(app.allocator);
+
+    try body.print(app.allocator, "{f}", .{json.fmt(app.notes.items, .{})});
+    try respondJson(request, .ok, body.items);
+}
+
+fn getNote(request: *std.http.Server.Request, app: *App, id: u32) !void {
+    const note = app.findNote(id) orelse {
+        return respondJson(
+            request,
+            .not_found,
+            "{\"error\":\"Nota no encontrada\"}",
+        );
+    };
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(app.allocator);
+
+    try body.print(app.allocator, "{f}", .{json.fmt(note.*, .{})});
+    try respondJson(request, .ok, body.items);
+}
+
+fn createNote(request: *std.http.Server.Request, app: *App) !void {
+    const text = try readBody(request, app.allocator);
+    defer app.allocator.free(text);
+
+    if (text.len == 0) {
+        return respondJson(
+            request,
+            .bad_request,
+            "{\"error\":\"Cuerpo de la request está vacio\"}",
+        );
+    }
+
+    const note = try app.createNote(text);
+
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(app.allocator);
+
+    try body.print(app.allocator, "{f}", .{json.fmt(note, .{})});
+    try respondJson(request, .created, body.items);
+}
+
+fn updateNote(request: *std.http.Server.Request, app: *App, id: u32) !void {
+    const note = app.findNote(id) orelse {
+        return respondJson(
+            request,
+            .not_found,
+            "{\"error\":\"Nota no encontrada\"}",
+        );
+    };
+    const text = try readBody(request, app.allocator);
+    defer app.allocator.free(text);
+
+    if (text.len == 0) {
+        return respondJson(
+            request,
+            .bad_request,
+            "{\"error\":\"Cuerpo de la request está vacio\"}",
+        );
+    }
+
+    app.allocator.free(note.text);
+    note.text = try app.allocator.dupe(u8, text);
+
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(app.allocator);
+
+    try body.print(app.allocator, "{f}", .{json.fmt(note.*, .{})});
+    try respondJson(request, .ok, body.items);
+}
+
+fn deleteNote(request: *std.http.Server.Request, app: *App, id: u32) !void {
+    if (!app.deleteNote(id)) {
+        return respondJson(
+            request,
+            .not_found,
+            "{\"error\":\"Nota no encontrada\"}",
+        );
+    }
+
+    try respondJson(request, .ok, "{\"deleted\":true}");
+}
+
+fn readBody(request: *std.http.Server.Request, allocator: std.mem.Allocator) ![]u8 {
+    const length = request.head.content_length orelse return allocator.dupe(u8, "");
+    if (length > 1024) {
+        return error.BodyTooLarge;
+    }
+
+    var body_buffer: [1024]u8 = undefined;
+    var reader = try request.readerExpectContinue(&body_buffer);
+    return reader.readAlloc(allocator, @intCast(length));
 }
 
 fn respondJson(
