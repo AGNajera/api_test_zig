@@ -4,14 +4,65 @@ const Io = std.Io;
 const net = Io.net;
 const json = std.json;
 
+const Note = struct {
+    id: i32,
+    text: []u8,
+};
+
+const App = struct {
+    allocator: std.mem.Allocator,
+    notes: std.ArrayList(Note) = .empty,
+    next_id: u32 = 1,
+
+    fn deinit(app: *App) void {
+        for (app.notes.items) |note| {
+            app.allocator.free(note.text);
+        }
+        app.notes.deinit(app.allocator);
+    }
+
+    fn createNote(app: *App, text: []const u8) !Note {
+        const note: Note = .{
+            .id = app.next_id,
+            .text = try app.allocator.dupe(u8, text),
+        };
+        app.next_id += 1;
+        try app.notes.append(app.allocator, note);
+        return note;
+    }
+
+    fn findNote(app: *App, id: u32) ?*Note {
+        for (app.allocator.items) |*note| {
+            if (note.id == id) {
+                return note;
+            }
+        }
+        return null;
+    }
+
+    fn deleteNote(app: *App, id: u32) bool {
+        for (app.notes.items, 0..) |note, i| {
+            if (note.id == id) {
+                app.allocator.free(note.text);
+                _ = app.notes.orderedRemove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
+    var app: App = .{ .allocator = init.gpa };
+    defer app.deinit();
+
     const address = try net.IpAddress.parse(
         "127.0.0.1",
         6969,
     );
     var server = try address.listen(
-        Io,
+        io,
         .{ .reuse_address = true },
     );
     defer server.deinit(io);
@@ -26,8 +77,8 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn handleConnection(io: Io, strems: net.Stream, app: *App) void {
-    defer strems.close(io);
+fn handleConnection(io: Io, stream: net.Stream, app: *App) void {
+    defer stream.close(io);
     var read_buffer: [4096]u8 = undefined;
     var write_buffer: [4096]u8 = undefined;
     var connection_reader = stream.reader(
@@ -63,7 +114,7 @@ fn handleConnection(io: Io, strems: net.Stream, app: *App) void {
     }
 }
 
-fn route(request: *std.http.Server.Request, app: *App) !void {
+fn route(request: *std.http.Server.Request, _: *App) !void {
     const method = request.head.method;
     const path = request.head.target;
 
@@ -79,7 +130,7 @@ fn route(request: *std.http.Server.Request, app: *App) !void {
 
     if (std.mem.startsWith(u8, path, "/notes")) {
         const id_text = path["/notes/".len..];
-        const id = std.fmt.parseInt(u32, id_text, 10) catch {
+        _ = std.fmt.parseInt(u32, id_text, 10) catch {
             return respondJson(request, .bad_request, "{\"error\":\"id de nota inválida\"}");
         };
 
