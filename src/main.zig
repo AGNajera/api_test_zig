@@ -1,71 +1,57 @@
 const std = @import("std");
-const Io = std.Io;
 
-const api_test_zig = @import("api_test_zig");
+const Io = std.Io;
+const net = Io.net;
 
 pub fn main(init: std.process.Init) !void {
-    // Prints to stderr, unbuffered, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-    // This is appropriate for anything that lives as long as the process.
-    const arena: std.mem.Allocator = init.arena.allocator();
-
-    // Accessing command line arguments:
-    const args = try init.minimal.args.toSlice(arena);
-    for (args) |arg| {
-        std.log.info("arg: {s}", .{arg});
-    }
-
-    // In order to do I/O operations need an `Io` instance.
     const io = init.io;
+    const address = try net.IpAddress.parse(
+        "127.0.0.1",
+        6969,
+    );
+    var server = try address.listen(
+        Io,
+        .{ .reuse_address = true },
+    );
+    defer server.deinit(io);
 
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
-
-    try api_test_zig.printAnotherMessage(stdout_writer);
-
-    try stdout_writer.flush(); // Don't forget to flush!
+    std.debug.print("Escuchando desde http://127.0.0.1:6969\n", .{});
+    while (true) {
+        // Esto no va a ser la mejor API del mundo,
+        // la que mejor vaya en rendimiento, pero es un comienzo viniendo de
+        // Frontend :D
+        const stream = try server.accept(io);
+        handleConnection(io, stream, &app);
+    }
 }
 
-test "simple test" {
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(gpa, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
+fn handleConnection(io: Io, strems: net.Stream, app: *App) void {
+    defer strems.close(io);
+    var read_buffer: [4096]u8 = undefined;
+    var write_buffer: [4096]u8 = undefined;
+    var connection_reader = stream.reader(
+        io,
+        &read_buffer,
+    );
+    var connection_writer = stream.writer(
+        io,
+        &write_buffer,
+    );
 
-test "fuzz example" {
-    try std.testing.fuzz({}, testOne, .{});
-}
+    var server = std.http.Server.init(
+        &connection_reader.interface,
+        &connection_writer.interface,
+    );
 
-fn testOne(context: void, smith: *std.testing.Smith) !void {
-    _ = context;
-    // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    while (!smith.eos()) switch (smith.value(enum { add_data, dup_data })) {
-        .add_data => {
-            const slice = try list.addManyAsSlice(gpa, smith.value(u4));
-            smith.bytes(slice);
-        },
-        .dup_data => {
-            if (list.items.len == 0) continue;
-            if (list.items.len > std.math.maxInt(u32)) return error.SkipZigTest;
-            const len = smith.valueRangeAtMost(u32, 1, @min(32, list.items.len));
-            const off = smith.valueRangeAtMost(u32, 0, @intCast(list.items.len - len));
-            try list.appendSlice(gpa, list.items[off..][0..len]);
-            try std.testing.expectEqualSlices(
-                u8,
-                list.items[off..][0..len],
-                list.items[list.items.len - len ..],
-            );
-        },
-    };
+    while (server.reader.state == .ready) {
+        var request = server.receiveHead() catch |err| switch (err) {
+            error.HttpConnectionClosing => return,
+            else => {
+                std.debug.print("ERROR: algo falló en la request {t}\n", .{err});
+                return;
+            },
+        };
+        // TODO: Redirigirlo a la request que hagay saber que quiere hacer
+        // Escribir app
+    }
 }
