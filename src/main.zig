@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Io = std.Io;
 const net = Io.net;
+const json = std.json;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -53,5 +54,49 @@ fn handleConnection(io: Io, strems: net.Stream, app: *App) void {
         };
         // TODO: Redirigirlo a la request que hagay saber que quiere hacer
         // Escribir app
+        route(&request, app) catch |err| {
+            std.debug.print("ERROR: algo falló {s}: {t}", .{
+                request.head.target,
+                err,
+            });
+        };
     }
+}
+
+fn route(request: *std.http.Server.Request, app: *App) !void {
+    const method = request.head.method;
+    const path = request.head.target;
+
+    if (std.mem.eql(u8, path, "/notes")) {
+        // TODO: Hacer el resto de metodos
+        // Leer los anteriores TODO´S
+        // Después haré un servidor en Go para ver cual es mejor.
+        // La IA lo puede escribir, pero que chiste tiene todo en la vida, no?
+        return switch (method) {
+            else => respondJson(request, .method_not_allowed, "{\"error\":\"no permitido\"}"),
+        };
+    }
+
+    if (std.mem.startsWith(u8, path, "/notes")) {
+        const id_text = path["/notes/".len..];
+        const id = std.fmt.parseInt(u32, id_text, 10) catch {
+            return respondJson(request, .bad_request, "{\"error\":\"id de nota inválida\"}");
+        };
+
+        return switch (method) {
+            else => respondJson(request, .method_not_allowed, "{\"error\":\"no permitido\"}"),
+        };
+    }
+    return respondJson(request, .not_found, "{\"error\":\"no se encontró\"}");
+}
+
+fn respondJson(
+    request: *std.http.Server.Request,
+    status: std.http.Status,
+    body: []const u8,
+) !void {
+    try request.respond(body, .{ .status = status, .extra_headers = &.{.{
+        .name = "content-type",
+        .value = "aplication/json",
+    }} });
 }
