@@ -21,6 +21,11 @@ pub fn build(b: *std.Build) void {
     // target and optimize options) will be listed when running `zig build --help`
     // in this directory.
 
+    const pg_module = b.dependency("pg", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("pg");
+
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business
@@ -53,11 +58,7 @@ pub fn build(b: *std.Build) void {
             // List of modules available for import in source files part of the
             // root module.
             .imports = &.{
-                // Here "api_test_zig" is the name you will use in your source code to
-                // import this module (e.g. `@import("api_test_zig")`). The name is
-                // repeated because you are allowed to rename your imports, which
-                // can be extremely useful in case of collisions (which can happen
-                // importing modules from different packages).
+                .{ .name = "pg", .module = pg_module },
             },
         }),
     });
