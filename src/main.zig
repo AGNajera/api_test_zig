@@ -1,6 +1,7 @@
 // Quedó terminado, pero falta agregar DB para que se mantengan los datos ya que ahora lo hago desde memoria
 
 const std = @import("std");
+const pg = @import("pg");
 
 const Io = std.Io;
 const net = Io.net;
@@ -8,54 +9,29 @@ const json = std.json;
 
 const Note = struct {
     id: u32,
-    text: []u8,
+    text: []const u8,
 };
 
 const App = struct {
     allocator: std.mem.Allocator,
-    notes: std.ArrayList(Note) = .empty,
-    next_id: u32 = 1,
-
-    fn deinit(app: *App) void {
-        for (app.notes.items) |note| {
-            app.allocator.free(note.text);
-        }
-        app.notes.deinit(app.allocator);
-    }
-
-    fn createNote(app: *App, text: []const u8) !Note {
-        const note: Note = .{
-            .id = app.next_id,
-            .text = try app.allocator.dupe(u8, text),
-        };
-        app.next_id += 1;
-        try app.notes.append(app.allocator, note);
-        return note;
-    }
-
-    fn findNote(app: *App, id: u32) ?*Note {
-        for (app.notes.items) |*note| {
-            if (note.id == id) return note;
-        }
-        return null;
-    }
-
-    fn deleteNote(app: *App, id: u32) bool {
-        for (app.notes.items, 0..) |note, i| {
-            if (note.id == id) {
-                app.allocator.free(note.text);
-                _ = app.notes.orderedRemove(i);
-                return true;
-            }
-        }
-        return false;
-    }
+    pool: *pg.Pool,
 };
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    var app: App = .{ .allocator = init.gpa };
-    defer app.deinit();
+
+    var pool = try pg.Pool.init(io, init.gpa, .{ .size = 5, .connect = .{
+        .port = 5432,
+        .host = "127.0.0.1",
+    }, .auth = .{
+        .username = "postgres",
+        .database = "notes",
+        .password = "potgres",
+        .timeout = 10_000,
+    } });
+    defer pool.deinit();
+
+    var app: App = .{ .allocator = init.gpa, .pool = pool };
 
     const address = try net.IpAddress.parse(
         "127.0.0.1",
@@ -66,6 +42,8 @@ pub fn main(init: std.process.Init) !void {
         .{ .reuse_address = true },
     );
     defer server.deinit(io);
+
+    _ = try pool.exec(@embedFile("sql/create_notes_table.sql"), .{});
 
     std.debug.print("Escuchando desde http://127.0.0.1:6969\n", .{});
     while (true) {
@@ -103,8 +81,6 @@ fn handleConnection(io: Io, stream: net.Stream, app: *App) void {
                 return;
             },
         };
-        // TODO: Redirigirlo a la request que hagay saber que quiere hacer
-        // Escribir app
         route(&request, app) catch |err| {
             std.debug.print("ERROR: algo falló {s}: {t}", .{
                 request.head.target,
@@ -114,32 +90,30 @@ fn handleConnection(io: Io, stream: net.Stream, app: *App) void {
     }
 }
 
-fn route(request: *std.http.Server.Request, app: *App) !void {
+fn route(request: *std.http.Server.Request, _: *App) !void {
     const method = request.head.method;
     const path = request.head.target;
 
     if (std.mem.eql(u8, path, "/notes")) {
-        // TODO: Hacer el resto de metodos
-        // Leer los anteriores TODO´S
         // Después haré un servidor en Go para ver cual es mejor.
         // La IA lo puede escribir, pero que chiste tiene todo en la vida, no?
         return switch (method) {
-            .GET => listNotes(request, app),
-            .POST => createNote(request, app),
+            // .GET => listNotes(request, app),
+            // .POST => createNote(request, app),
             else => respondJson(request, .method_not_allowed, "{\"error\":\"no permitido\"}"),
         };
     }
 
     if (std.mem.startsWith(u8, path, "/notes")) {
         const id_text = path["/notes/".len..];
-        const id = std.fmt.parseInt(u32, id_text, 10) catch {
+        _ = std.fmt.parseInt(u32, id_text, 10) catch {
             return respondJson(request, .bad_request, "{\"error\":\"id de nota inválida\"}");
         };
 
         return switch (method) {
-            .GET => getNote(request, app, id),
-            .PUT => updateNote(request, app, id),
-            .DELETE => deleteNote(request, app, id),
+            // .GET => getNote(request, app, id),
+            // .PUT => updateNote(request, app, id),
+            // .DELETE => deleteNote(request, app, id),
             else => respondJson(request, .method_not_allowed, "{\"error\":\"no permitido\"}"),
         };
     }
